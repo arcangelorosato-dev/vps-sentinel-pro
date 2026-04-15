@@ -1,0 +1,1 @@
+{"name":"vps-sentinel-agent","version":"1.0.0","main":"monitor-agent.js","scripts":{"start":"node monitor-agent.js"},"dependencies":{"dotenv":"^16.0.0"}}

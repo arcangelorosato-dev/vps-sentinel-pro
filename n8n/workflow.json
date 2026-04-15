@@ -1,0 +1,664 @@
+{
+  "name": "VPS Sentinel Pro - Multi Server",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "11870896-7ca1-46c2-a94c-8f9dd0d6a1e7",
+      "name": "Schedule - Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        5408,
+        4272
+      ],
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════\n// CONFIGURAZIONE PRINCIPALE — modifica solo questa sezione\n// ═══════════════════════════════════════════════════════════\n\nconst CONFIG = {\n\n  // Il tuo Telegram Chat ID (usa @userinfobot per trovarlo)\n  admin_telegram_id: 'telegram_id',\n\n  // Soglie che triggerano alert metriche (valori percentuali)\n  thresholds: {\n    cpu_percent:    85,\n    memory_percent: 90,\n    disk_percent:   85,\n    failed_logins:  5    // numero tentativi, non percentuale\n  },\n\n  // Lista dei VPS da monitorare\n  // - url: indirizzo dell'agente (http://IP:3000)\n  // - secret: deve coincidere con SECRET_TOKEN sull'agente\n  // - alertLevel: 'high' = report anche se clean | 'medium'/'low' = solo se anomalie\n  servers: [\n    {\n      id:          'vps-02',\n      name:        'VPS 2',\n      url:         'http://YOUR_SERVER_IP:3000',\n      secret:      'YOUR_SECRET_TOKEN',\n      environment: 'production',\n      alertLevel:  'high'\n    },\n    {\n      id:          'vps-01',\n      name:        'VPS 1',\n      url:         'http://YOUR_SERVER_IP:3000',\n      secret:      'YOUR_SECRET_TOKEN',\n      environment: 'production',\n      alertLevel:  'high'\n    },\n    \n    // ← aggiungi altri server qui con lo stesso formato\n  ]\n};\n\n// Restituisce un item per ogni server (elaborazione parallela)\nreturn CONFIG.servers.map(server => ({\n  json: { ...server, thresholds: CONFIG.thresholds, admin_telegram_id: CONFIG.admin_telegram_id }\n}));"
+      },
+      "id": "80a5aa05-fe73-44c5-affc-f79f626fabae",
+      "name": "VPS List",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        5632,
+        4272
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}/health",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 5000
+        }
+      },
+      "id": "38bd83d2-b58b-4507-87eb-5e6597b6a131",
+      "name": "Health Check (ping agente)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        5856,
+        4272
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "status-ok",
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b32dd017-346c-4519-b253-a32ca68378ec",
+      "name": "Agente Online?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        6064,
+        4272
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('VPS List').item.json.admin_telegram_id }}",
+        "text": "=🔴 *Agente VPS Non Raggiungibile*\n\n🖥️ *Server:* {{ $('VPS List').item.json.name }}\n🌍 *Ambiente:* {{ $('VPS List').item.json.environment }}\n⏰ *Ora:* {{ new Date().toLocaleString('it-IT') }}\n\n━━━━━━━━━━━━━━━━━━\n❌ L'agente sentinel non risponde.\nVerifica che pm2 e la connettività siano attivi.",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "4d54d874-c855-4103-ba19-0ecc4518466a",
+      "name": "Alert Agente Offline",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        6304,
+        4160
+      ],
+      "typeVersion": 1.2,
+      "webhookId": "539f04b1-3284-4286-b7b0-e9006df524b1",
+      "credentials": {
+        "telegramApi": {
+          "id": "6HGoxEiVPWh4G3UB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $('VPS List').item.json.url }}/stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-auth-token",
+              "value": "={{ $('VPS List').item.json.secret }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "67500808-8d24-4a60-92c9-c231158d752d",
+      "name": "Fetch Stats dall'Agente",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        6304,
+        4352
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 1. Recupero dati: usiamo la sintassi corretta per accoppiare gli indici\nconst config = $(\"VPS List\").item.json; \nconst stats = $input.item.json;\nconst thresh = config.thresholds;\n\n// 2. Gestione errori di connessione\nif (stats.error) {\n  return {\n    json: {\n      vps_id: config.id,\n      vps_name: config.name,\n      environment: config.environment,\n      alert_level: config.alertLevel,\n      admin_telegram_id: config.admin_telegram_id,\n      stats_error: stats.error,\n      metric_alerts: [`❌ Errore agente: ${stats.error}`],\n      has_metric_alerts: true,\n      ai_payload: { host: config.name, unrecognized_procs: \"[]\", failed_auth: \"\" }\n    }\n  };\n}\n\nconst alerts = [];\n\n// 3. Valutazione Metriche (RAM, CPU, Disco)\nconst mem = stats.memory || {};\nif (mem.percent_used >= thresh.memory_percent) {\n  alerts.push(`🔴 RAM al ${mem.percent_used}% (soglia ${thresh.memory_percent}%)`);\n}\n\nconst cpu = stats.cpu || {};\nif (cpu.percent_used >= thresh.cpu_percent) {\n  alerts.push(`🔴 CPU al ${cpu.percent_used}% (soglia ${thresh.cpu_percent}%)`);\n}\n\nconst disks = stats.disks || [];\nfor (const disk of disks) {\n  if (disk.percent >= thresh.disk_percent) {\n    alerts.push(`🔴 DISCO ${disk.mount} al ${disk.percent}%`);\n  }\n}\n\n// 4. Sicurezza (Login falliti)\nconst failedCount = stats.security?.failed_auth_count || 0;\nif (failedCount >= thresh.failed_logins) {\n  alerts.push(`🔴 SICUREZZA: ${failedCount} tentativi falliti!`);\n}\n\n// 5. OUTPUT CORRETTO (Impacchettato per n8n)\nreturn {\n  json: {\n    vps_id:             config.id,\n    vps_name:           config.name,\n    environment:        config.environment,\n    alert_level:        config.alertLevel,\n    admin_telegram_id:  config.admin_telegram_id,\n    stats:              stats,\n    metric_alerts:      alerts,\n    has_metric_alerts:  alerts.length > 0,\n    ai_payload: {\n      host:               stats.host || config.name,\n      environment:        config.environment,\n      unrecognized_procs: JSON.stringify(stats.processes || []),\n      open_ports:         JSON.stringify(stats.security?.listening_ports || []),\n      disk_percent_max:   Math.max(...(stats.disks || []).map(d => d.percent), 0),\n      last_logins:        (stats.security?.last_logins || []).join('\\n'),\n      failed_auth:        (stats.security?.failed_auth || []).join('\\n'),\n      logged_users:       (stats.security?.logged_users || []).join('\\n')\n    }\n  }\n};"
+      },
+      "id": "b4adab19-cdad-446a-b411-1974bd7e8d81",
+      "name": "Arricchisci e Valuta Metriche",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        6512,
+        4352
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Sei un analista SOC esperto in cybersecurity Linux. Valuta la sicurezza del server *{{ $json.vps_name }}* ({{ $json.environment }}).\n\nAnalizza i dati seguenti e identifica minacce concrete:\n\n**Processi non riconosciuti (già filtrati dalla whitelist):**\n{{ $json.ai_payload.unrecognized_procs }}\n\n**Porte in ascolto:**\n{{ $json.ai_payload.open_ports }}\n\n**Tentativi login falliti:**\n{{ $json.ai_payload.failed_auth }}\n\n**Attività sudo:**\n{{ $json.ai_payload.sudo_activity }}\n\n**Crontab root:**\n{{ $json.ai_payload.root_crontab }}\n\n**Utenti connessi ora:**\n{{ $json.ai_payload.logged_users }}\n\n**Ultimi login:**\n{{ $json.ai_payload.last_logins }}\n\nRegole di classificazione:\n1. `malicious` se trovi: miner crypto (xmrig, minerd, nanopool), shell reverse (nc, ncat, socat verso IP esterni), processi con nomi offuscati (stringa random 8+ char), script in /tmp o /dev/shm, modifiche crontab sospette, login da IP insoliti combinati con sudo\n2. `warning` se trovi: porte insolite aperte, IP mai visti in last login, processi ad alto consumo non identificabili, sudo da utenti non previsti\n3. `clean` se tutto è nella norma\n\nSe malicious e/o suspicious sono vuoti, metti stringa vuota (\"\"), non scrivere 'Nessuno' o 'None'.",
+        "hasOutputParser": true,
+        "batching": {}
+      },
+      "id": "4fab4852-cbe9-4b20-b171-1cbde1636027",
+      "name": "AI Security Analysis",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        6688,
+        4352
+      ],
+      "typeVersion": 1.7
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"malicious\": { \"type\": \"string\", \"description\": \"Processi/attivita' confermati come malevoli. Stringa vuota se nessuno.\" },\n    \"malicious_explain\": { \"type\": \"string\", \"description\": \"Spiegazione dettagliata delle minacce trovate.\" },\n    \"suspicious\": { \"type\": \"string\", \"description\": \"Attivita' sospette non confermate. Stringa vuota se nessuna.\" },\n    \"suspicious_explain\": { \"type\": \"string\", \"description\": \"Spiegazione dei finding sospetti.\" },\n    \"status\": { \"type\": \"string\", \"description\": \"Stato: clean, warning o compromised\" },\n    \"recommendations\": { \"type\": \"string\", \"description\": \"Azioni consigliate in italiano.\" }\n  }\n}"
+      },
+      "id": "c017d69d-5e97-4d31-8c05-29dc8910eda9",
+      "name": "Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "position": [
+        6832,
+        4544
+      ],
+      "typeVersion": 1.3
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.05
+        }
+      },
+      "id": "c6c09a08-6437-429c-bc71-fc53d081cefd",
+      "name": "OpenAI GPT-4o Mini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "position": [
+        6688,
+        4544
+      ],
+      "typeVersion": 1.2,
+      "credentials": {
+        "openAiApi": {
+          "id": "S8iYyhGI9mIGzLgM",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item      = $input.item.json;\nconst ai        = item.output || {};\nconst hasMal    = (ai.malicious || '').trim().length > 0;\nconst hasSusp   = (ai.suspicious || '').trim().length > 0;\nconst hasMetric = item.has_metric_alerts;\n\nlet severity = 'clean';\nif (hasMal)              severity = 'compromised';\nelse if (hasSusp || hasMetric) severity = 'warning';\n\nconst stats = item.stats || {};\nconst mem   = stats.memory || {};\nconst cpu   = stats.cpu || {};\nconst disks = stats.disks || [];\nconst maxDisk = disks.length > 0 ? Math.max(...disks.map(d => d.percent)) : 0;\n\nreturn {\n  json: {\n    ...item,\n    ai,\n    severity,\n    has_malicious:   hasMal,\n    has_suspicious:  hasSusp,\n    has_metric_alerts: hasMetric,\n    needs_alert:     hasMal || hasSusp || hasMetric,\n    // Sommario leggibile per Telegram\n    summary: {\n      ram_percent:   mem.percent_used || 0,\n      ram_used_mb:   mem.used_mb || 0,\n      ram_total_mb:  mem.total_mb || 0,\n      cpu_percent:   cpu.percent_used || 0,\n      cpu_load1:     cpu.load1 || 0,\n      cpu_cores:     cpu.cores || 1,\n      max_disk:      maxDisk,\n      uptime_h:      stats.uptime_hours || 0,\n      connections:   stats.network?.established_connections || 0,\n      failed_auth:   stats.security?.failed_auth_count || 0,\n      logged_users:  (stats.security?.logged_users || []).length\n    }\n  }\n};"
+      },
+      "id": "07372549-0b37-47e2-8a52-344cb761e5c6",
+      "name": "Combina Risultati",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        6976,
+        4352
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "mal-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "leftValue": "={{ $json.has_malicious }}"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "03583f28-1df6-441f-9fa2-e0a7e81d8ac8",
+      "name": "È Compromesso?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        7184,
+        3984
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "susp-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "leftValue": "={{ $json.has_suspicious }}"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1b3c6098-1946-4af8-b62b-8c4ebe45cfb6",
+      "name": "È Sospetto?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        7184,
+        4208
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "metric-cond",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "leftValue": "={{ $json.has_metric_alerts }}"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "21886e5b-37ea-4376-9ea9-e40c3b96b423",
+      "name": "Alert Metriche?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        7184,
+        4448
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "clean-cond-1",
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              },
+              "leftValue": "={{ $json.needs_alert }}"
+            },
+            {
+              "id": "clean-cond-2",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.alert_level }}",
+              "rightValue": "high"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "98372f36-b7df-4011-81fb-6f24870d997d",
+      "name": "Report Clean? (solo high)",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        7200,
+        4672
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.admin_telegram_id }}",
+        "text": "=🚨 *SECURITY ALERT — COMPROMISSIONE RILEVATA* 🚨\n\n🖥 *Server:* {{ $json.vps_name }}\n🌍 *Ambiente:* {{ $json.environment }}\n⏰ *Ora:* {{ new Date().toLocaleString('it-IT') }}\n━━━━━━━━━━━━━━━━━━\n☣️ *Minacce Confermate:*\n{{ $json.ai.malicious }}\n\n📋 *Analisi:*\n{{ $json.ai.malicious_explain }}\n\n🛡️ *Azioni Raccomandate:*\n{{ $json.ai.recommendations }}\n━━━━━━━━━━━━━━━━━━\n⚡ *INTERVENTO IMMEDIATO RICHIESTO*",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "f4db36ea-b5a9-4ad7-892f-a81a30f15899",
+      "name": "Telegram — Compromesso",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        7504,
+        3968
+      ],
+      "typeVersion": 1.2,
+      "webhookId": "de8aebf1-da0b-4316-bbe4-f4b1f9808a2c",
+      "credentials": {
+        "telegramApi": {
+          "id": "6HGoxEiVPWh4G3UB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('VPS List').item.json.admin_telegram_id }}",
+        "text": "=⚠️ *Security Notice — Attività Sospetta* ⚠️\n\n🖥 *Server:* {{ $('VPS List').item.json.name }}\n🌍 *Ambiente:* {{ $('VPS List').item.json.environment }}\n⏰ *Ora:* {{ new Date().toLocaleString('it-IT') }}\n━━━━━━━━━━━━━━━━━━\n🔍 *Attività Sospette:*\n{{ $json.ai.suspicious }}\n\n📋 *Analisi:*\n{{ $json.ai.suspicious_explain }}\n\n🛡️ *Raccomandazioni:*\n{{ $json.ai.recommendations }}\n━━━━━━━━━━━━━━━━━━\n🔎 Monitora e indaga se necessario.",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "fb02ee13-c4ff-4fd2-8519-c551d6e75252",
+      "name": "Telegram — Sospetto",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        7488,
+        4192
+      ],
+      "typeVersion": 1.2,
+      "webhookId": "baa45d9d-d98f-4f3d-bce0-52740551c178",
+      "credentials": {
+        "telegramApi": {
+          "id": "6HGoxEiVPWh4G3UB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.admin_telegram_id }}",
+        "text": "=📊 *System Metrics Alert* 📊\n\n🖥 *Server:* {{ $json.vps_name }}\n🌍 *Ambiente:* {{ $json.environment }}\n⏰ *Ora:* {{ new Date().toLocaleString('it-IT') }}\n━━━━━━━━━━━━━━━━━━\n🚦 *Soglie superate:*\n{{ $json.metric_alerts.join('\\n') }}\n\n📈 *Snapshot sistema:*\n• 🧠 RAM: {{ $json.summary.ram_percent }}% ({{ $json.summary.ram_used_mb }}MB/{{ $json.summary.ram_total_mb }}MB)\n• ⚡ CPU: {{ $json.summary.cpu_percent }}% (load {{ $json.summary.cpu_load1 }}/{{ $json.summary.cpu_cores }} core)\n• 💾 Disco max: {{ $json.summary.max_disk }}%\n• 🔗 Connessioni attive: {{ $json.summary.connections }}\n• 👤 Utenti connessi: {{ $json.summary.logged_users }}\n━━━━━━━━━━━━━━━━━━\n⚠️ Verifica le risorse del server.",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "52ad17dd-7e6d-4878-8835-ba8015d61a29",
+      "name": "Telegram — Metriche",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        7488,
+        4432
+      ],
+      "typeVersion": 1.2,
+      "webhookId": "24fdcbf1-192e-4588-a70c-b913faf153a0",
+      "credentials": {
+        "telegramApi": {
+          "id": "6HGoxEiVPWh4G3UB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.admin_telegram_id }}",
+        "text": "=✅ *VPS Report — Tutto OK* ✅\n\n🖥 *Server:* {{ $json.vps_name }}\n🌍 *Ambiente:* {{ $json.environment }}\n⏰ *Ora:* {{ new Date().toLocaleString('it-IT') }}\n━━━━━━━━━━━━━━━━━━\n📈 *Snapshot sistema:*\n• 🧠 RAM: {{ $json.summary.ram_percent }}% ({{ $json.summary.ram_used_mb }}MB/{{ $json.summary.ram_total_mb }}MB)\n• ⚡ CPU: {{ $json.summary.cpu_percent }}% (load {{ $json.summary.cpu_load1 }}/{{ $json.summary.cpu_cores }} core)\n• 💾 Disco max: {{ $json.summary.max_disk }}%\n• ⏱️ Uptime: {{ $json.summary.uptime_h }}h\n• 🔗 Connessioni: {{ $json.summary.connections }}\n• 👤 Utenti connessi: {{ $json.summary.logged_users }}\n• 🔐 Login falliti: {{ $json.summary.failed_auth }}\n\n🛡️ *AI Status:* {{ $json.ai.status }}\n━━━━━━━━━━━━━━━━━━\n🟢 Nessuna anomalia rilevata.",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "5f345bbb-26a3-402d-9dd3-59dc01938922",
+      "name": "Telegram — Report Clean",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        7488,
+        4656
+      ],
+      "typeVersion": 1.2,
+      "webhookId": "14c6e33f-306a-4c30-ac58-4f67254bfe17",
+      "credentials": {
+        "telegramApi": {
+          "id": "6HGoxEiVPWh4G3UB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 🛡️ VPS Sentinel Pro\n\n**Architettura agente \n\n### Flusso per ogni VPS:\n1. Ping `/health` → se offline, alert immediato\n2. Fetch `/stats` con token segreto\n3. Valutazione soglie metriche (CPU/RAM/Disco)\n4. Analisi AI (GPT-4o-mini) su processi e sicurezza\n5. Alert differenziati su Telegram\n\n### Come aggiungere un VPS:\n1. Installa `monitor-agent.js` sul nuovo server\n2. Aggiungi l'entry nell'array `servers` del nodo **VPS List**\n3. Nessun altro nodo da toccare\n\n### Credenziali da impostare in N8N:\n- `openAiApi` → API key OpenAI\n- `telegramApi` → token del tuo bot\n\n### Soglie alert (nodo VPS List):\n- CPU > 85% | RAM > 90% | Disco > 85%\n- Login falliti > 5",
+        "height": 584,
+        "width": 460
+      },
+      "id": "b7ac085c-f75a-4f5d-b0f1-cd502ab91a75",
+      "name": "Note — Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        4880,
+        4032
+      ],
+      "typeVersion": 1
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule - Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "VPS List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VPS List": {
+      "main": [
+        [
+          {
+            "node": "Health Check (ping agente)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Check (ping agente)": {
+      "main": [
+        [
+          {
+            "node": "Agente Online?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente Online?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Stats dall'Agente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Agente Offline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Stats dall'Agente": {
+      "main": [
+        [
+          {
+            "node": "Arricchisci e Valuta Metriche",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Arricchisci e Valuta Metriche": {
+      "main": [
+        [
+          {
+            "node": "AI Security Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI GPT-4o Mini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Security Analysis",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Security Analysis",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Security Analysis": {
+      "main": [
+        [
+          {
+            "node": "Combina Risultati",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combina Risultati": {
+      "main": [
+        [
+          {
+            "node": "È Compromesso?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "È Sospetto?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Metriche?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Report Clean? (solo high)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "È Compromesso?": {
+      "main": [
+        [
+          {
+            "node": "Telegram — Compromesso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "È Sospetto?": {
+      "main": [
+        [
+          {
+            "node": "Telegram — Sospetto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Metriche?": {
+      "main": [
+        [
+          {
+            "node": "Telegram — Metriche",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Clean? (solo high)": {
+      "main": [
+        [
+          {
+            "node": "Telegram — Report Clean",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "6fbea329-f607-49be-a5c8-a4512bf8a5ce",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "631455cc5970acd020ec6d6de2cc40d8808ed44865894cc5636252fab8668d4d"
+  },
+  "id": "jZ0Q9ttGmtwWc5N2",
+  "tags": []
+}
